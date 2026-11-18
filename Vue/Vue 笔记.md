@@ -20026,3 +20026,2343 @@ inputComponent.value?.focus()
 ---
 
 
+下面按 **6 篇独立笔记**整理，直接放在对话中。
+
+示例延续你的项目环境：**Vue 3 + TypeScript + `<script setup>`**。各章案例独立使用，涉及多个 `App.vue` 时，可以分别替换体验。
+
+---
+
+# 响应式进阶——浅层响应式与只读控制
+
+## 一、先分清两个问题
+
+之前学习的 `ref`、`reactive`，主要解决：
+
+> 数据变化后，如何让依赖它的页面、计算属性和侦听器作出响应？
+
+这一章进一步控制两个方面：
+
+|控制方向|关注的问题|相关 API|
+|---|---|---|
+|响应式深度|需要追踪对象内部多深的变化？|`shallowRef`、`shallowReactive`|
+|修改权限|是否允许通过当前入口修改数据？|`readonly`、`shallowReadonly`|
+
+**“浅层”与“只读”是两回事。**
+
+- 浅层响应式：控制哪些变化会被追踪。
+- 只读代理：限制通过这个代理进行修改。
+
+## 二、shallowRef：只追踪 `.value` 的变化
+
+### 1. 回顾普通 ref
+
+当普通 `ref` 接收普通对象时，内部对象会转换为深层响应式对象。
+
+```
+import { ref } from 'vue'
+
+const user = ref({
+  name: '小轩',
+  address: {
+    city: '南京'
+  }
+})
+
+user.value.name = '张三'
+user.value.address.city = '苏州'
+```
+
+以上修改都可以触发相应依赖更新。
+
+### 2. shallowRef 的基本用法
+
+```
+import { shallowRef } from 'vue'
+
+const user = shallowRef({
+  name: '小轩',
+  address: {
+    city: '南京'
+  }
+})
+```
+
+它保留了 ref 的形式：
+
+```
+user.value
+```
+
+但是，传入的普通对象会按原样保存，不会因为 `shallowRef` 自动变成深层响应式对象。
+
+```
+// 内部数据确实改变了，但这个修改本身不会触发 shallowRef 的依赖更新
+user.value.name = '张三'
+
+// 替换整个 value，可以触发更新
+user.value = {
+  name: '李四',
+  address: {
+    city: '苏州'
+  }
+}
+```
+
+判断关键是：
+
+> 修改的是 `.value` 指向的对象，还是替换了 `.value` 本身？
+
+### 3. 一个容易误解的地方
+
+下面这段代码执行后：
+
+```
+user.value.name = '张三'
+```
+
+**数据已经变了。**
+
+只是 Vue 没有因为这次内部修改而安排相关更新。
+
+如果组件后来因为其他响应式数据变化而重新渲染，页面也可能顺便显示出这个新名字。
+
+所以不能理解成：
+
+> shallowRef 内部的数据改不了。
+
+应该理解成：
+
+> 对普通内部对象的修改，不会自动触发这个 shallowRef 的依赖更新。
+
+### 4. 完整示例
+
+```
+<script setup lang="ts">
+import { shallowRef, triggerRef } from 'vue'
+
+const user = shallowRef({
+  name: '小轩',
+  score: 80
+})
+
+function changeInside() {
+  user.value.score++
+  console.log('实际分数：', user.value.score)
+}
+
+function replaceUser() {
+  user.value = {
+    ...user.value,
+    score: user.value.score + 1
+  }
+}
+
+function notifyUpdate() {
+  triggerRef(user)
+}
+</script>
+
+<template>
+  <h2>{{ user.name }}</h2>
+  <p>页面上的分数：{{ user.score }}</p>
+
+  <button @click="changeInside">
+    只修改内部属性
+  </button>
+
+  <button @click="replaceUser">
+    替换整个对象
+  </button>
+
+  <button @click="notifyUpdate">
+    手动通知更新
+  </button>
+</template>
+```
+
+可以按这个顺序观察：
+
+1. 点击“只修改内部属性”，控制台数值增加。
+2. 页面不会因为这次内部修改自动更新。
+3. 点击“手动通知更新”，页面显示当前真实数值。
+4. 点击“替换整个对象”，页面正常更新。
+
+### 5. triggerRef 的作用
+
+```
+triggerRef(user)
+```
+
+它会主动通知依赖这个 shallow ref 的响应式副作用重新执行。
+
+但它**不会把内部普通对象转换为深层响应式对象**。后续继续修改内部属性，仍然需要重新赋值或再次通知。
+
+另外，`shallowRef` 不会清除一个值本来已经具有的响应式能力：
+
+```
+import { reactive, shallowRef } from 'vue'
+
+const source = reactive({
+  count: 0
+})
+
+const state = shallowRef(source)
+
+// source 本来就是响应式对象，这个特性仍然存在
+state.value.count++
+```
+
+这里不能套用“内部属性一律不响应”的结论。
+
+## 三、shallowReactive：只转换对象的第一层
+
+### 1. 基本用法
+
+```
+import { shallowReactive } from 'vue'
+
+const state = shallowReactive({
+  count: 0,
+  user: {
+    name: '小轩',
+    score: 80
+  }
+})
+```
+
+访问时不需要 `.value`：
+
+```
+state.count++
+```
+
+对于传入的普通对象：
+
+```
+// 第一层属性：可以触发更新
+state.count++
+
+// user 内部是普通对象：这个修改本身不会触发更新
+state.user.score++
+
+// 替换第一层的 user 属性：可以触发更新
+state.user = {
+  name: '张三',
+  score: 100
+}
+```
+
+注意，“只处理第一层”指的是：
+
+```
+state.count
+state.user
+```
+
+其中 `state.user` 这个属性的替换会被追踪，但不会继续自动转换其内部普通对象。
+
+### 2. 与 shallowRef 对比
+
+|对比项|`shallowRef`|`shallowReactive`|
+|---|---|---|
+|返回值形式|ref 对象|对象代理|
+|脚本中访问|`.value`|直接访问属性|
+|主要追踪内容|`.value` 的替换|对象第一层属性的变化|
+|替换整体数据|`state.value = 新值`|通常修改其根属性|
+|常见用途|整体替换的数据、外部状态|只需要根属性响应式的对象|
+
+### 3. 不会自动解包根属性里的 ref
+
+```
+import { ref, shallowReactive } from 'vue'
+
+const count = ref(0)
+
+const state = shallowReactive({
+  count
+})
+
+// state.count 仍然是 ref
+state.count.value++
+```
+
+这一点与深层 `reactive` 对普通对象属性中的 ref 解包行为不同。
+
+学习阶段通常不需要刻意组合这些结构，知道有这个区别即可。
+
+## 四、readonly：提供深层只读访问入口
+
+### 1. 基本用法
+
+```
+import { reactive, readonly } from 'vue'
+
+const source = reactive({
+  name: '小轩',
+  address: {
+    city: '南京'
+  }
+})
+
+const user = readonly(source)
+```
+
+现在可以通过 `user` 读取：
+
+```
+console.log(user.name)
+console.log(user.address.city)
+```
+
+但不能通过它修改：
+
+```
+// TypeScript 会报只读错误；运行时通过代理修改也会被阻止
+// user.name = '张三'
+// user.address.city = '苏州'
+```
+
+`readonly` 的只读限制会深入到嵌套对象。
+
+### 2. 只读代理不是数据副本
+
+```
+source.name = '李四'
+
+console.log(user.name) // 李四
+```
+
+原因是：
+
+```
+const user = readonly(source)
+```
+
+没有复制出另一份独立数据。
+
+它为同一份底层数据提供了一个只读入口。通过原来的响应式 `source` 修改，读取 `user` 的相关依赖仍然可以更新。
+
+因此：
+
+- `readonly` 不等于深拷贝。
+- `readonly` 不等于数据快照。
+- `readonly` 不会禁止其他合法入口修改原始数据。[cn.vuejs.org](https://cn.vuejs.org/api/reactivity-core?utm_source=chatgpt.com)
+
+### 3. 适合什么场景？
+
+例如希望把状态提供给其他组件读取，同时集中维护修改逻辑：
+
+```
+import { reactive, readonly } from 'vue'
+
+const state = reactive({
+  count: 0
+})
+
+function increment() {
+  state.count++
+}
+
+export function useCounter() {
+  return {
+    state: readonly(state),
+    increment
+  }
+}
+```
+
+使用方：
+
+```
+const { state, increment } = useCounter()
+
+console.log(state.count)
+
+increment()
+
+// 不允许直接绕过修改函数
+// state.count++
+```
+
+这里的 `state` 定义在模块顶层，因此调用者共享同一份状态。若把它放到 `useCounter()` 内部，则每次调用会创建自己的状态。
+
+这个例子主要展示：
+
+> 对外提供只读状态，通过明确的方法修改状态。
+
+## 五、shallowReadonly：只限制第一层修改
+
+```
+import { shallowReadonly } from 'vue'
+
+const config = shallowReadonly({
+  title: '学习面板',
+  theme: {
+    color: 'blue'
+  }
+})
+```
+
+第一层不允许修改：
+
+```
+// 不允许
+// config.title = '新标题'
+
+// 不允许替换整个 theme
+// config.theme = { color: 'red' }
+```
+
+嵌套的普通对象仍然可以修改：
+
+```
+config.theme.color = 'red'
+```
+
+这里也要注意：
+
+> “允许修改内部对象”不代表“内部对象自动具有响应式”。
+
+这个例子中的 `theme` 是普通对象。
+
+如果嵌套进去的本来就是响应式对象，它原有的响应式能力会保留。
+
+## 六、四个 API 放在一起看
+
+以下表格以传入**普通对象**为前提：
+
+|API|主要作用|内部对象自动深层响应式|是否限制修改|
+|---|---|--:|---|
+|`ref`|创建 ref|是|否|
+|`shallowRef`|创建浅层 ref|否|否|
+|`reactive`|创建深层响应式代理|是|否|
+|`shallowReactive`|创建浅层响应式代理|否|否|
+|`readonly`|创建深层只读代理|重点是深层只读；响应更新还取决于数据来源和修改入口|是，包含嵌套层级|
+|`shallowReadonly`|创建浅层只读代理|不自动深入转换|是，只限制第一层|
+
+浅层 API 更适合以整体替换为主的大型数据或外部状态集成。它们能够减少深层代理相关开销，但同时要求你调整更新方式，不能直接替换所有普通表单状态。[Vue.js](https://cn.vuejs.org/guide/best-practices/performance?utm_source=chatgpt.com)
+
+**日常开发仍然优先使用 `ref`、`reactive`。有明确需求时，再使用浅层 API。**
+
+---
+
+# 响应式进阶——toRaw 与 markRaw
+
+## 一、先理解原始对象和代理对象
+
+```
+import { reactive } from 'vue'
+
+const original = {
+  name: '小轩'
+}
+
+const user = reactive(original)
+
+console.log(user === original) // false
+```
+
+这里有两个对象身份：
+
+|变量|含义|
+|---|---|
+|`original`|原始对象|
+|`user`|Vue 创建的响应式代理|
+
+平时应通过代理读写需要参与响应式的数据：
+
+```
+user.name = '张三'
+```
+
+Vue 正是通过代理拦截相关操作，进行依赖追踪和更新通知。
+
+这一章的两个 API 分别解决：
+
+- `toRaw`：从代理取得原始对象。
+- `markRaw`：标记对象，让它跳过响应式代理转换。
+
+## 二、toRaw：取得代理对应的原始对象
+
+### 1. 基本用法
+
+```
+import { reactive, toRaw } from 'vue'
+
+const original = {
+  name: '小轩',
+  score: 80
+}
+
+const user = reactive(original)
+
+const rawUser = toRaw(user)
+
+console.log(rawUser === original) // true
+console.log(rawUser === user)     // false
+```
+
+它返回的是原来的对象，不是复制品。
+
+### 2. 修改原始对象，会发生什么？
+
+```
+rawUser.score = 100
+
+console.log(user.score) // 100
+```
+
+代理和原始对象对应同一份底层数据，所以读取代理时也能读到新值。
+
+但这次赋值：
+
+```
+rawUser.score = 100
+```
+
+绕过了代理的设置操作，因此不会通过这次修改正常发出响应式更新通知。
+
+这和前一章的浅层响应式有一个相似现象：
+
+> 数据可以已经改变，但相关页面没有因为本次修改而自动更新。
+
+### 3. 不要把 toRaw 当成“取消响应式”
+
+```
+const rawUser = toRaw(user)
+```
+
+不会让已有的 `user` 失去响应式能力：
+
+```
+user.score++ // 仍然通过代理修改
+```
+
+所以 `toRaw` 的含义是：
+
+> 取得这个代理对应的原始对象。
+
+它不是：
+
+> 把整个程序里这个对象的响应式全部关闭。
+
+### 4. 也不是深拷贝或通用的深层去代理工具
+
+```
+const rawUser = toRaw(user)
+```
+
+不能代替：
+
+```
+structuredClone(...)
+```
+
+也不能保证返回对象图中所有位置都不再包含任何代理。
+
+例如：
+
+```
+import { reactive, toRaw } from 'vue'
+
+const child = reactive({
+  count: 0
+})
+
+const parent = reactive({
+  child
+})
+
+const rawParent = toRaw(parent)
+
+// 原始 parent 对象中存入的 child 本来就是代理
+console.log(rawParent.child === child) // true
+```
+
+另外，`toRaw` 与 ref 解包也不同：
+
+```
+import { ref, toRaw } from 'vue'
+
+const count = ref(10)
+
+console.log(count.value) // 10
+console.log(toRaw(count) === count) // true
+```
+
+读取 ref 的值应使用 `.value` 或 `unref`，不要拿 `toRaw` 替代。
+
+### 5. 使用原则
+
+`toRaw` 更适合需要临时访问原始对象的特殊场景。
+
+不要为了“写起来方便”，长期同时保留两个更新入口：
+
+```
+const user = reactive(...)
+const rawUser = toRaw(user)
+```
+
+然后一会儿修改 `user`，一会儿修改 `rawUser`。这样很容易出现数据变了、页面却没有按预期更新的问题。
+
+## 三、markRaw：让一个对象跳过代理转换
+
+### 1. 基本用法
+
+```
+import { isReactive, markRaw, reactive } from 'vue'
+
+const externalObject = markRaw({
+  name: '外部对象'
+})
+
+const state = reactive({
+  externalObject
+})
+
+console.log(state.externalObject === externalObject) // true
+console.log(isReactive(state.externalObject)) // false
+```
+
+虽然外层 `state` 是响应式对象，但 `externalObject` 被标记后，不会在这里被转换成响应式代理。
+
+`markRaw` 会返回传入的对象本身：
+
+```
+const original = {
+  count: 0
+}
+
+const marked = markRaw(original)
+
+console.log(marked === original) // true
+```
+
+### 2. 常见用途：第三方实例
+
+有些对象具有自己的内部机制，例如：
+
+- 编辑器实例。
+- 图表实例。
+- 地图实例。
+- 某些复杂的类实例。
+
+这些对象未必适合再被 Vue 深层代理。
+
+用一个简化的播放器类举例：
+
+```
+import { markRaw, reactive } from 'vue'
+
+class Player {
+  volume = 50
+
+  play() {
+    console.log('开始播放')
+  }
+
+  setVolume(value: number) {
+    this.volume = value
+  }
+}
+
+const state = reactive({
+  title: '课程视频',
+  player: markRaw(new Player())
+})
+
+state.player.play()
+state.player.setVolume(80)
+```
+
+这里：
+
+```
+state.title = 'Vue 3 入门'
+```
+
+是正常的响应式修改。
+
+而：
+
+```
+state.player.setVolume(80)
+```
+
+修改的是未被代理的播放器实例内部状态，不会自动让依赖音量值的 Vue 页面更新。
+
+实际开发中可以分工：
+
+```
+import { markRaw, ref } from 'vue'
+
+const player = markRaw(new Player())
+
+// 给页面使用的响应式状态
+const volume = ref(50)
+
+function changeVolume(value: number) {
+  volume.value = value
+  player.setVolume(value)
+}
+```
+
+外部实例负责自身功能，Vue 状态负责页面展示。
+
+### 3. markRaw 不是 readonly
+
+```
+const data = markRaw({
+  count: 0
+})
+
+data.count++ // 可以修改
+```
+
+它控制的是“是否转换成代理”，不是“能不能修改”。
+
+### 4. 不会递归标记所有内部对象
+
+```
+import { markRaw, reactive } from 'vue'
+
+const rawContainer = markRaw({
+  nested: {
+    count: 0
+  }
+})
+
+const state = reactive({
+  nested: rawContainer.nested
+})
+
+console.log(rawContainer.nested === state.nested) // false
+```
+
+原因是：
+
+1. `rawContainer` 本身被标记。
+2. `rawContainer.nested` 没有因此被单独标记。
+3. 将 `nested` 单独放进另一个响应式对象后，它可以被转换成代理。
+
+这种情况可能影响：
+
+- 使用 `===` 判断身份。
+- 把对象作为 `Map` 的键。
+- 依赖对象身份进行缓存。
+
+`toRaw` 和 `markRaw` 都属于需要谨慎使用的底层控制手段；尤其要避免原始对象与代理对象混用造成身份判断问题。[cn.vuejs.org](https://cn.vuejs.org/api/reactivity-advanced?utm_source=chatgpt.com)
+
+## 四、toRaw、markRaw、shallowRef 怎么选？
+
+|需求|更合适的 API|
+|---|---|
+|已有一个代理，临时取得它的原始对象|`toRaw`|
+|希望某个对象在进入响应式结构时跳过代理转换|`markRaw`|
+|希望替换一个值时更新页面，但保留内部值原有状态|`shallowRef`|
+|希望阻止通过当前入口修改对象|`readonly`|
+
+例如保存外部编辑器实例：
+
+```
+import { shallowRef } from 'vue'
+
+const editor = shallowRef<Player | null>(null)
+
+editor.value = new Player()
+```
+
+这里使用 `shallowRef`，是为了：
+
+- 跟踪实例的创建、替换和清空。
+- 避免自动深入转换实例内部。
+
+这种“由外部系统管理内部状态，Vue 追踪外层引用”的方式，也适用于部分第三方状态系统。[Vue.js](https://cn.vuejs.org/guide/extras/reactivity-in-depth?utm_source=chatgpt.com)
+
+---
+
+# 响应式进阶——customRef 与防抖输入
+
+## 一、customRef 解决什么问题？
+
+普通 `ref` 的行为已经由 Vue 定义好了：
+
+```
+const count = ref(0)
+
+count.value++
+```
+
+通常修改 `.value` 后，会通知依赖更新。
+
+但有时希望自己控制：
+
+- 读取时如何收集依赖。
+- 赋值时是否立即保存。
+- 什么时候通知更新。
+
+例如：
+
+> 用户连续输入时，等停止输入 500 毫秒，再提交搜索关键词。
+
+这种场景可以使用 `customRef`。
+
+## 二、基本结构
+
+```
+import { customRef } from 'vue'
+
+const count = customRef<number>((track, trigger) => {
+  let value = 0
+
+  return {
+    get() {
+      track()
+      return value
+    },
+
+    set(newValue) {
+      value = newValue
+      trigger()
+    }
+  }
+})
+```
+
+返回值仍然是 ref：
+
+```
+count.value++
+```
+
+模板里仍然可以自动解包：
+
+```
+<p>{{ count }}</p>
+```
+
+### 两个关键函数
+
+|函数|作用|
+|---|---|
+|`track()`|在读取时，把当前正在执行的响应式副作用登记为依赖|
+|`trigger()`|通知已经登记的相关依赖重新执行|
+
+可以把上面的代码理解为：
+
+```
+get() {
+  // 告诉 Vue：当前使用者依赖这个值
+  track()
+
+  return value
+}
+```
+
+```
+set(newValue) {
+  // 自己决定怎么保存
+  value = newValue
+
+  // 自己决定什么时候通知
+  trigger()
+}
+```
+
+`customRef` 主要控制 ref 的访问与通知行为，不会因为使用了它就自动获得普通 `ref` 对对象值的全部深层转换行为。
+
+## 三、先理解防抖
+
+假设用户连续输入：
+
+```
+v
+vu
+vue
+```
+
+每次输入间隔都小于 500 毫秒。
+
+希望最终只在用户停止输入 500 毫秒后，处理最后的：
+
+```
+vue
+```
+
+这叫**防抖**。
+
+它与“每次都延迟执行”不同：
+
+|方式|连续输入三次的结果|
+|---|---|
+|每次延迟 500 毫秒|最后仍然执行三次|
+|防抖 500 毫秒|前面的任务被取消，只执行最后一次|
+
+实现关键是：
+
+> 新任务到来时，取消上一次尚未执行的定时器。
+
+## 四、封装 useDebouncedRef
+
+创建 `src/hooks/useDebouncedRef.ts`：
+
+```
+import { customRef, onScopeDispose } from 'vue'
+
+export function useDebouncedRef<T>(
+  initialValue: T,
+  delay = 500
+) {
+  let value = initialValue
+
+  let timer: ReturnType<typeof setTimeout> | undefined
+
+  const debouncedRef = customRef<T>((track, trigger) => {
+    return {
+      get() {
+        track()
+        return value
+      },
+
+      set(newValue) {
+        // 新输入到来，取消上次等待中的任务
+        if (timer !== undefined) {
+          clearTimeout(timer)
+        }
+
+        timer = setTimeout(() => {
+          value = newValue
+          timer = undefined
+
+          // 等待结束后再通知更新
+          trigger()
+        }, delay)
+      }
+    }
+  })
+
+  // 在 setup 中使用时，组件销毁会清理所属作用域
+  onScopeDispose(() => {
+    if (timer !== undefined) {
+      clearTimeout(timer)
+    }
+  })
+
+  return debouncedRef
+}
+```
+
+### 代码拆解
+
+#### 1. 泛型 T
+
+```
+export function useDebouncedRef<T>(
+  initialValue: T,
+  delay = 500
+)
+```
+
+由初始值推导类型：
+
+```
+const keyword = useDebouncedRef('')
+// 字符串类型
+
+const page = useDebouncedRef(1)
+// 数字类型
+```
+
+#### 2. 闭包保存实际值
+
+```
+let value = initialValue
+```
+
+这个普通变量保存当前已经提交的值。
+
+它本身不是响应式变量，响应式依赖由 `track`、`trigger` 管理。
+
+#### 3. 定时器类型
+
+```
+ReturnType<typeof setTimeout>
+```
+
+表示取得 `setTimeout` 的返回值类型，避免手工假设它一定是某种具体类型。
+
+#### 4. 作用域清理
+
+```
+onScopeDispose(...)
+```
+
+用于在当前响应式作用域结束时清理副作用。
+
+这里要求在组件的 `<script setup>` 等有效作用域中同步调用这个 Hook。组件卸载后，不应继续保留尚未执行的定时任务。
+
+## 五、完整案例：输入立即显示，搜索延迟生效
+
+这里刻意分开两份状态：
+
+|状态|用途|
+|---|---|
+|`inputText`|输入框立即显示的内容|
+|`keyword`|停止输入一段时间后，真正用于筛选的关键词|
+
+`App.vue`：
+
+```
+<script setup lang="ts">
+import { computed, ref, watch } from 'vue'
+import { useDebouncedRef } from './hooks/useDebouncedRef'
+
+const inputText = ref('')
+
+const keyword = useDebouncedRef('', 500)
+
+const courses = [
+  'HTML 基础',
+  'CSS 布局',
+  'JavaScript 入门',
+  'TypeScript 入门',
+  'Vue 3 核心语法',
+  'Vue Router',
+  'Pinia 状态管理'
+]
+
+watch(inputText, (newText) => {
+  keyword.value = newText
+})
+
+const filteredCourses = computed(() => {
+  const text = keyword.value.trim().toLowerCase()
+
+  return courses.filter((course) => {
+    return course.toLowerCase().includes(text)
+  })
+})
+</script>
+
+<template>
+  <h2>课程搜索</h2>
+
+  <input
+    v-model="inputText"
+    placeholder="请输入课程名称"
+  />
+
+  <p>当前输入：{{ inputText }}</p>
+  <p>已经生效的关键词：{{ keyword }}</p>
+
+  <ul>
+    <li
+      v-for="course in filteredCourses"
+      :key="course"
+    >
+      {{ course }}
+    </li>
+  </ul>
+
+  <p v-if="filteredCourses.length === 0">
+    没有匹配的课程
+  </p>
+</template>
+```
+
+执行过程：
+
+1. 用户输入，`inputText` 立即改变。
+2. `watch` 把新内容交给 `keyword`。
+3. `keyword` 的 setter 重置定时器。
+4. 停止输入 500 毫秒后，保存最终关键词。
+5. 调用 `trigger()`。
+6. `filteredCourses` 重新计算，页面更新。
+
+### 为什么不直接绑定 keyword？
+
+形式上可以这样写：
+
+```
+<input v-model="keyword" />
+```
+
+但本章的 `keyword` 会延迟保存新值。
+
+输入框中正在编辑的文字与已经提交的状态，可能在等待期间不同步。把它们分开，更便于处理清空、重置、其他地方修改输入等行为。
+
+特别是搜索场景，通常希望：
+
+> 输入体验立即响应，昂贵的处理延迟执行。
+
+## 六、customRef 与 watch、computed 的区别
+
+|工具|适合的职责|
+|---|---|
+|`ref`|保存普通响应式状态|
+|`computed`|根据已有状态推导结果|
+|`watch`|状态变化后执行请求、存储等副作用|
+|`customRef`|自定义一个 ref 的读取、赋值和通知行为|
+
+如果项目只有一个防抖请求，使用：
+
+```
+ref + watch + 定时器清理
+```
+
+也完全可以。
+
+当希望把“延迟提交这个值”的行为封装成可复用的响应式工具时，`customRef` 会更合适。
+
+另一个注意点是：不要在 `get()` 中每次都无条件创建新对象，否则可能引入不稳定的对象身份，让父子组件的更新判断更难理解。[cn.vuejs.org](https://cn.vuejs.org/api/reactivity-advanced?utm_source=chatgpt.com)
+
+---
+
+# 内置组件——Teleport 与弹窗封装
+
+## 一、为什么需要 Teleport？
+
+假设组件结构是：
+
+```
+<template>
+  <div class="page">
+    <div class="content">
+      <StudyModal />
+    </div>
+  </div>
+</template>
+```
+
+从业务角度看，弹窗属于当前页面，这样写很自然。
+
+但弹窗的真实 DOM 如果也嵌套在深层容器中，可能受到祖先元素的布局和层叠关系影响。
+
+例如祖先元素创建了新的层叠上下文，或者某些样式改变了固定定位元素的参照关系。
+
+这时单纯把弹窗的 `z-index` 写得很大，也未必能解决问题。
+
+`Teleport` 允许：
+
+> 组件仍然写在当前逻辑位置，但把其中一部分 DOM 渲染到指定位置。
+
+## 二、基本用法
+
+```
+<template>
+  <Teleport to="body">
+    <div class="modal">
+      我会被渲染到 body 下
+    </div>
+  </Teleport>
+</template>
+```
+
+`Teleport` 是 Vue 内置组件，模板中可以直接使用，不需要额外安装。
+
+### to 的含义
+
+```
+<Teleport to="body">
+```
+
+表示把内部内容渲染到 `body`。
+
+也可以指定其他容器：
+
+```
+<Teleport to="#modal-root">
+```
+
+对应的 `index.html` 可以包含：
+
+```
+<body>
+  <div id="app"></div>
+
+  <div id="modal-root"></div>
+
+  <script type="module" src="/src/main.ts"></script>
+</body>
+```
+
+通常应保证目标容器在 Teleport 挂载时已经存在。
+
+## 三、DOM 位置与组件关系要分开理解
+
+使用 Teleport 后：
+
+|内容|是否改变|
+|---|---|
+|实际 DOM 挂载位置|改变|
+|Vue 组件的逻辑父子关系|保留|
+|`props` 传递|正常|
+|组件自定义事件|正常|
+|`provide / inject`|按组件逻辑关系工作|
+|原生 DOM 事件冒泡路径|按实际 DOM 结构|
+|CSS 祖先选择器、继承关系|受实际 DOM 位置影响|
+
+例如：
+
+```
+<div class="page">
+  <Teleport to="body">
+    <div class="modal">内容</div>
+  </Teleport>
+</div>
+```
+
+下面这个依赖 DOM 祖先关系的选择器，可能不再匹配：
+
+```
+.page .modal {
+  color: red;
+}
+```
+
+因为 `.modal` 已经被放到 `body` 下。
+
+不过，组件的普通 `scoped` 样式仍然可以作用于它渲染出来的对应元素，因为这些元素仍然带有相应的作用域标记。
+
+## 四、封装一个 StudyModal
+
+下面同时复习之前学过的：
+
+- `props`。
+- 命名 `v-model`。
+- `defineModel`。
+- 默认插槽。
+- 条件渲染。
+
+这里的 `defineModel` 写法需要 Vue 3.4+。
+
+### 1. 子组件 StudyModal.vue
+
+```
+<script setup lang="ts">
+const props = withDefaults(
+  defineProps<{
+    title?: string
+  }>(),
+  {
+    title: '提示'
+  }
+)
+
+const open = defineModel<boolean>('open', {
+  required: true
+})
+
+function close() {
+  open.value = false
+}
+</script>
+
+<template>
+  <Teleport to="body">
+    <div
+      v-if="open"
+      class="modal-mask"
+      @click.self="close"
+    >
+      <section
+        class="modal-panel"
+        role="dialog"
+        :aria-label="props.title"
+      >
+        <header class="modal-header">
+          <h2>{{ props.title }}</h2>
+        </header>
+
+        <div class="modal-body">
+          <slot />
+        </div>
+
+        <footer class="modal-footer">
+          <button @click="close">
+            关闭
+          </button>
+        </footer>
+      </section>
+    </div>
+  </Teleport>
+</template>
+
+<style scoped>
+.modal-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+
+  display: grid;
+  place-items: center;
+
+  background: rgb(0 0 0 / 45%);
+}
+
+.modal-panel {
+  box-sizing: border-box;
+  width: min(420px, calc(100vw - 32px));
+  padding: 24px;
+  border-radius: 12px;
+  background: white;
+  color: #222;
+}
+
+.modal-header h2 {
+  margin: 0 0 16px;
+}
+
+.modal-footer {
+  margin-top: 24px;
+  text-align: right;
+}
+</style>
+```
+
+### 2. 父组件 App.vue
+
+```
+<script setup lang="ts">
+import { ref } from 'vue'
+import StudyModal from './components/StudyModal.vue'
+
+const modalOpen = ref(false)
+
+const studyPlan = ref('今天学习 Teleport')
+</script>
+
+<template>
+  <h2>学习计划</h2>
+
+  <p>{{ studyPlan }}</p>
+
+  <button @click="modalOpen = true">
+    编辑学习计划
+  </button>
+
+  <StudyModal
+    v-model:open="modalOpen"
+    title="修改计划"
+  >
+    <label>
+      学习内容：
+      <input v-model="studyPlan" />
+    </label>
+  </StudyModal>
+</template>
+```
+
+### 3. 关键点解释
+
+#### 开关状态由父组件保存
+
+```
+const modalOpen = ref(false)
+```
+
+#### 子组件通过命名模型修改父组件状态
+
+```
+const open = defineModel<boolean>('open', {
+  required: true
+})
+```
+
+```
+open.value = false
+```
+
+#### 插槽决定弹窗中的业务内容
+
+```
+<slot />
+```
+
+弹窗组件只负责通用外壳，具体内容由使用者传入。
+
+#### 点击遮罩关闭
+
+```
+@click.self="close"
+```
+
+`.self` 表示只有事件目标就是遮罩本身时才执行。
+
+点击弹窗内部的输入框，不会因为事件冒泡而触发这次关闭。
+
+这个案例展示的是 Teleport 和组件封装。完整的通用弹窗，还需要进一步处理键盘交互、焦点管理和页面滚动。
+
+## 五、disabled：禁用传送，不是隐藏内容
+
+```
+<Teleport
+  to="body"
+  :disabled="true"
+>
+  <div>内容</div>
+</Teleport>
+```
+
+禁用后，内容会渲染在原来的位置。
+
+因此要分开：
+
+|写法|含义|
+|---|---|
+|`v-if="open"`|是否创建、显示这部分内容|
+|`:disabled="condition"`|是否把内容传送到目标位置|
+
+不要把：
+
+```
+<Teleport :disabled="!open">
+```
+
+当成弹窗显示开关。
+
+## 六、补充：defer
+
+Vue 3.5+ 提供 `defer`：
+
+```
+<template>
+  <Teleport
+    defer
+    to="#late-target"
+  >
+    <p>被传送的内容</p>
+  </Teleport>
+
+  <div id="late-target"></div>
+</template>
+```
+
+它允许延后解析目标，便于找到在同一轮挂载或更新中稍后出现的容器。
+
+但它不会无限等待一个异步创建的目标。目标如果一秒后才出现，不能指望 `defer` 自动等到那时。
+
+Teleport 保留组件逻辑关系、`disabled` 改为原位渲染，以及 `defer` 的周期限制，都需要与实际 DOM 移动区分开。[Vue.js](https://cn.vuejs.org/guide/built-ins/teleport?utm_source=chatgpt.com)
+
+---
+
+# 异步组件与 Suspense
+
+## 一、先分清两种“异步”
+
+学习这一章前，先区分：
+
+|情况|等待的是什么|
+|---|---|
+|异步加载组件|等待组件代码加载完成|
+|组件异步初始化|等待初始化需要的数据或任务完成|
+
+它们可以分别出现，也可以同时出现。
+
+例如：
+
+1. 先按需下载“用户资料面板”的组件代码。
+2. 再等待用户资料请求完成。
+3. 最后展示完整面板。
+
+## 二、defineAsyncComponent：按需加载组件
+
+### 1. 普通静态导入
+
+```
+import ReportPanel from './components/ReportPanel.vue'
+```
+
+这是代码中的静态依赖。
+
+### 2. 异步组件写法
+
+```
+import { defineAsyncComponent } from 'vue'
+
+const AsyncReportPanel = defineAsyncComponent(() => {
+  return import('./components/ReportPanel.vue')
+})
+```
+
+也可以简写：
+
+```
+const AsyncReportPanel = defineAsyncComponent(
+  () => import('./components/ReportPanel.vue')
+)
+```
+
+这里：
+
+```
+import('./components/ReportPanel.vue')
+```
+
+是动态导入，返回 Promise。
+
+在 Vite 项目中，这种动态导入通常会形成独立的代码分块，供需要时加载。
+
+### 3. 简单案例
+
+先创建 `components/ReportPanel.vue`：
+
+```
+<template>
+  <section>
+    <h3>学习报告</h3>
+    <p>本周已完成 5 个知识点。</p>
+  </section>
+</template>
+```
+
+`App.vue`：
+
+```
+<script setup lang="ts">
+import { defineAsyncComponent, ref } from 'vue'
+
+const showReport = ref(false)
+
+const AsyncReportPanel = defineAsyncComponent(
+  () => import('./components/ReportPanel.vue')
+)
+</script>
+
+<template>
+  <button @click="showReport = !showReport">
+    切换学习报告
+  </button>
+
+  <AsyncReportPanel v-if="showReport" />
+</template>
+```
+
+只有真正需要渲染这个异步组件时，才会调用它的加载器。
+
+不过本地开发时组件文件很小，可能几乎看不到等待过程。异步组件仍然可以正常接收 props 和插槽。[cn.vuejs.org](https://cn.vuejs.org/guide/components/async?utm_source=chatgpt.com)
+
+## 三、异步组件可以单独配置加载状态
+
+```
+import { defineAsyncComponent } from 'vue'
+
+import LoadingPanel from './components/LoadingPanel.vue'
+import LoadError from './components/LoadError.vue'
+
+const AsyncReportPanel = defineAsyncComponent({
+  loader: () => import('./components/ReportPanel.vue'),
+
+  loadingComponent: LoadingPanel,
+
+  errorComponent: LoadError,
+
+  delay: 200,
+
+  timeout: 10000
+})
+```
+
+这里的 `LoadingPanel`、`LoadError` 是需要自己创建的普通组件。
+
+|配置|含义|
+|---|---|
+|`loader`|实际加载组件的函数|
+|`loadingComponent`|等待时显示的组件|
+|`errorComponent`|加载失败时显示的组件|
+|`delay`|等待多久后才展示加载组件，减少闪烁|
+|`timeout`|超时后进入错误处理|
+
+这是“某个异步组件自己管理加载展示”的方式。
+
+接下来学习的 Suspense，可以在更上层协调异步依赖。
+
+## 四、Suspense 是什么？
+
+`Suspense` 是 Vue 内置组件，用于等待其组件树中的特定异步依赖，并在等待期间展示统一的后备内容。
+
+**目前官方仍将 Suspense 标记为实验性功能，相关 API 在稳定前仍可能变化。**[Vue.js](https://cn.vuejs.org/guide/built-ins/suspense?utm_source=chatgpt.com)
+
+基本结构：
+
+```
+<Suspense>
+  <template #default>
+    <AsyncContent />
+  </template>
+
+  <template #fallback>
+    <p>正在加载……</p>
+  </template>
+</Suspense>
+```
+
+|插槽|作用|
+|---|---|
+|`default`|准备完成后要展示的主要内容|
+|`fallback`|等待期间展示的后备内容|
+
+两个插槽分别保留一个直接子节点；多个元素可以放进同一个容器中。
+
+## 五、完整案例：等待异步 setup
+
+### 1. 创建 AsyncProfile.vue
+
+下面使用定时器模拟接口请求，因此不需要后端：
+
+```
+<script setup lang="ts">
+interface Profile {
+  name: string
+  direction: string
+}
+
+async function loadProfile(): Promise<Profile> {
+  return new Promise((resolve) => {
+    setTimeout(() => {
+      resolve({
+        name: '小轩',
+        direction: 'Vue 3 与全栈开发'
+      })
+    }, 1000)
+  })
+}
+
+const profile = await loadProfile()
+</script>
+
+<template>
+  <section>
+    <h3>个人资料</h3>
+    <p>姓名：{{ profile.name }}</p>
+    <p>学习方向：{{ profile.direction }}</p>
+  </section>
+</template>
+```
+
+关键是：
+
+```
+const profile = await loadProfile()
+```
+
+这是 `<script setup>` 中的**顶层 await**。
+
+它会使这个组件的 setup 成为异步初始化过程。
+
+### 2. App.vue
+
+```
+<script setup lang="ts">
+import AsyncProfile from './components/AsyncProfile.vue'
+</script>
+
+<template>
+  <h2>学习主页</h2>
+
+  <Suspense>
+    <template #default>
+      <AsyncProfile />
+    </template>
+
+    <template #fallback>
+      <p>正在获取个人资料……</p>
+    </template>
+  </Suspense>
+</template>
+```
+
+显示过程：
+
+1. 页面开始渲染。
+2. 发现 `AsyncProfile` 的异步初始化尚未完成。
+3. 展示 `fallback`。
+4. 一秒后取得数据。
+5. 展示个人资料。
+
+注意，这个例子对组件使用的是：
+
+```
+import AsyncProfile from './components/AsyncProfile.vue'
+```
+
+它不是通过 `defineAsyncComponent` 加载组件代码。
+
+它之所以需要等待，是因为**组件的 setup 本身是异步的**。
+
+## 六、哪些异步操作会被等待？
+
+可以先记住两类：
+
+1. 异步 setup，包括 `<script setup>` 中的顶层 `await`。
+2. 默认参与 Suspense 协调的异步组件。
+
+下面这种普通异步函数不会仅仅因为存在 `await`，就自动让组件成为 Suspense 的异步依赖：
+
+```
+import { onMounted, ref } from 'vue'
+
+const name = ref('')
+
+onMounted(async () => {
+  const result = await loadSomething()
+
+  name.value = result
+})
+```
+
+这里等待发生在挂载回调中，setup 本身仍然可以同步完成。
+
+同理：
+
+- 按钮点击后发请求。
+- `watch` 回调里请求数据。
+- Pinia action 内执行异步任务。
+
+都不意味着 Suspense 会自动接管其加载状态。
+
+这类场景通常仍然自己维护：
+
+```
+const loading = ref(false)
+const error = ref('')
+```
+
+## 七、加载失败怎么处理？
+
+Suspense 没有内置的：
+
+```
+<template #error>
+```
+
+错误插槽。
+
+可以在包含 Suspense 的父组件中使用 `onErrorCaptured` 捕获后代错误。
+
+把前面的 `App.vue` 扩展为：
+
+```
+<script setup lang="ts">
+import { onErrorCaptured, ref } from 'vue'
+
+import AsyncProfile from './components/AsyncProfile.vue'
+
+const errorMessage = ref('')
+
+onErrorCaptured((error) => {
+  errorMessage.value =
+    error instanceof Error
+      ? error.message
+      : String(error)
+
+  // 表示此处已经处理，停止继续向上传播
+  return false
+})
+</script>
+
+<template>
+  <h2>学习主页</h2>
+
+  <p v-if="errorMessage">
+    加载失败：{{ errorMessage }}
+  </p>
+
+  <Suspense v-else>
+    <template #default>
+      <AsyncProfile />
+    </template>
+
+    <template #fallback>
+      <p>正在获取个人资料……</p>
+    </template>
+  </Suspense>
+</template>
+```
+
+前面的模拟函数总会成功。如果将来换成真实请求，请求失败就需要考虑这种错误处理。
+
+加载等待与错误处理是两个不同职责。
+
+## 八、与异步组件自身配置的关系
+
+当 `defineAsyncComponent` 创建的组件位于 Suspense 管理下时，默认会作为异步依赖参与等待。
+
+此时加载状态交由 Suspense 控制，异步组件自身的加载、错误、延迟和超时选项会被忽略。
+
+如果希望这个异步组件自己管理加载状态，可以配置：
+
+```
+const AsyncReportPanel = defineAsyncComponent({
+  loader: () => import('./components/ReportPanel.vue'),
+
+  suspensible: false
+})
+```
+
+## 九、几个容易混淆的细节
+
+### 1. 不是后续每次请求都会重新显示 fallback
+
+Suspense 完成初次解析后，并不会因为组件内部任意一个新请求，就自动重新挂起。
+
+默认插槽根节点被替换等情况，才可能让边界重新进入等待状态。
+
+### 2. Suspense 的 timeout 不是接口请求超时
+
+```
+<Suspense :timeout="0">
+```
+
+主要影响已经完成的边界再次进入等待时，何时切换到后备内容。
+
+它不会自动取消网络请求。
+
+### 3. 路由懒加载与异步组件不同
+
+之前学过：
+
+```
+{
+  path: '/report',
+  component: () => import('../views/ReportView.vue')
+}
+```
+
+这是 Vue Router 支持的路由懒加载。
+
+它本身不会因为这种写法就触发 Suspense 的加载后备内容。不过路由页面内的异步 setup 或异步子组件，仍然可能参与 Suspense。[cn.vuejs.org](https://cn.vuejs.org/guide/built-ins/suspense?utm_source=chatgpt.com)
+
+---
+
+# 应用实例与 Vue 2 全局 API 迁移
+
+## 一、重新认识 main.ts
+
+你之前已经见过：
+
+```
+import { createApp } from 'vue'
+
+import App from './App.vue'
+
+createApp(App).mount('#app')
+```
+
+拆开看：
+
+```
+const app = createApp(App)
+
+app.mount('#app')
+```
+
+其中：
+
+```
+createApp(App)
+```
+
+创建的是 **Vue 应用实例**。
+
+```
+app.mount('#app')
+```
+
+把这个应用挂载到页面容器中。
+
+### 应用实例与组件实例不同
+
+|类型|负责什么|例子|
+|---|---|---|
+|应用实例|应用配置、插件安装、全局注册、挂载|`createApp()` 返回值|
+|组件实例|某个具体组件的状态与行为|模板 ref 获取的组件实例|
+
+还要注意：
+
+```
+const app = createApp(App)
+
+const rootInstance = app.mount('#app')
+```
+
+- `app` 是应用实例。
+- `rootInstance` 是根组件的公共实例。
+
+所以不要这样写：
+
+```
+const app = createApp(App).mount('#app')
+
+// 此时变量实际上接到的是根组件公共实例
+// app.use(...)
+```
+
+Vue 应用的配置和资源注册，应在挂载前完成。[Vue.js](https://cn.vuejs.org/guide/essentials/application?utm_source=chatgpt.com)
+
+## 二、为什么 Vue 3 要强调应用实例？
+
+Vue 2 中常见：
+
+```
+Vue.component(...)
+Vue.use(...)
+Vue.mixin(...)
+Vue.prototype.$xxx = ...
+```
+
+这些操作直接影响同一个 Vue 构造函数的全局环境。
+
+如果同一页面或测试环境中存在多个应用，配置之间容易互相影响。
+
+Vue 3 把这类应用配置放到具体的应用实例上：
+
+```
+const appA = createApp(AppA)
+const appB = createApp(AppB)
+```
+
+例如：
+
+```
+appA.component('BaseButton', BaseButton)
+```
+
+这次注册属于 `appA`，不会自动变成 `appB` 的注册项。
+
+## 三、常见应用实例 API
+
+|API|用途|
+|---|---|
+|`app.mount()`|挂载应用|
+|`app.unmount()`|卸载应用|
+|`app.component()`|注册全局组件|
+|`app.directive()`|注册全局自定义指令|
+|`app.use()`|安装插件|
+|`app.provide()`|提供应用级依赖|
+|`app.config`|设置应用配置|
+
+### 1. app.component：全局注册组件
+
+```
+import { createApp } from 'vue'
+
+import App from './App.vue'
+import BaseButton from './components/BaseButton.vue'
+
+const app = createApp(App)
+
+app.component('BaseButton', BaseButton)
+
+app.mount('#app')
+```
+
+之后该应用中的组件可以直接使用：
+
+```
+<BaseButton />
+```
+
+不需要每个使用处都再次导入。
+
+不过普通业务组件通常仍适合局部导入：
+
+```
+<script setup lang="ts">
+import UserCard from './UserCard.vue'
+</script>
+```
+
+局部导入的依赖关系更直观。
+
+### 2. app.directive：注册全局指令
+
+例如一个获取焦点的指令：
+
+```
+app.directive('focus', {
+  mounted(el: HTMLInputElement) {
+    el.focus()
+  }
+})
+```
+
+使用：
+
+```
+<input v-focus />
+```
+
+这里的：
+
+```
+mounted(el)
+```
+
+会在指令绑定的元素挂载后执行。
+
+自定义指令主要用于复用针对底层 DOM 的操作，不必为了普通的数据展示逻辑专门创建指令。
+
+### 3. app.use：安装插件
+
+之前使用 Router 和 Pinia 时：
+
+```
+app.use(router)
+app.use(pinia)
+```
+
+就是安装插件。
+
+一个插件可以为应用增加：
+
+- 全局组件。
+- 自定义指令。
+- 注入的数据或服务。
+- 应用配置。
+- 其他集成功能。
+
+插件通常是一个安装函数，或者具有 `install` 方法的对象。
+
+例如：
+
+```
+import type { App } from 'vue'
+
+const StudyPlugin = {
+  install(app: App) {
+    app.provide('studySiteName', 'Vue 学习站')
+  }
+}
+```
+
+安装：
+
+```
+app.use(StudyPlugin)
+```
+
+组件中读取：
+
+```
+import { inject } from 'vue'
+
+const siteName = inject<string>('studySiteName')
+```
+
+正式项目中，复杂的注入契约可以进一步使用之前学过的 `InjectionKey`。
+
+### 4. app.provide：应用级依赖注入
+
+```
+app.provide('siteName', 'Vue 学习站')
+```
+
+应用内组件可以注入：
+
+```
+const siteName = inject<string>('siteName')
+```
+
+与组件内的 `provide` 相比：
+
+|写法|主要提供范围|
+|---|---|
+|组件内 `provide()`|该组件的后代|
+|`app.provide()`|该应用中的组件|
+
+`app.provide` 也不会自动把普通对象变成响应式对象。是否响应式，仍然取决于提供的值本身。
+
+## 四、一个典型的 main.ts
+
+假设项目已经安装并配置了 Router 和 Pinia：
+
+```
+import './assets/main.css'
+
+import { createApp } from 'vue'
+import { createPinia } from 'pinia'
+
+import App from './App.vue'
+import router from './router'
+
+const app = createApp(App)
+
+const pinia = createPinia()
+
+app.use(pinia)
+app.use(router)
+
+app.provide('siteName', 'Vue 学习站')
+
+app.mount('#app')
+```
+
+这份入口文件的职责很清楚：
+
+1. 引入全局样式。
+2. 创建应用。
+3. 安装插件。
+4. 配置应用级能力。
+5. 挂载应用。
+
+业务页面中的请求、表单和按钮逻辑，通常不应该全部堆到 `main.ts`。
+
+## 五、globalProperties：组件公共实例上的全局属性
+
+### 1. Vue 2 中的写法
+
+```
+Vue.prototype.$formatPrice = formatPrice
+```
+
+组件中：
+
+```
+this.$formatPrice(1990)
+```
+
+### 2. Vue 3 中的对应写法
+
+```
+app.config.globalProperties.$formatPrice = formatPrice
+```
+
+下面做一个完整示例。
+
+### 3. 创建格式化工具
+
+`src/utils/formatPrice.ts`：
+
+```
+export function formatPrice(cents: number): string {
+  return `¥${(cents / 100).toFixed(2)}`
+}
+```
+
+这里约定参数单位是“分”：
+
+```
+formatPrice(1990) // ¥19.90
+```
+
+### 4. 注册
+
+`main.ts` 中：
+
+```
+import { createApp } from 'vue'
+
+import App from './App.vue'
+import { formatPrice } from './utils/formatPrice'
+
+const app = createApp(App)
+
+app.config.globalProperties.$formatPrice = formatPrice
+
+app.mount('#app')
+```
+
+模板中：
+
+```
+<template>
+  <p>价格：{{ $formatPrice(1990) }}</p>
+</template>
+```
+
+这些全局属性可以通过组件模板以及适用场景下的组件实例 `this` 访问。[cn.vuejs.org](https://cn.vuejs.org/api/application?utm_source=chatgpt.com)
+
+### 5. TypeScript 类型补充
+
+为了让 TypeScript 认识这个全局属性，可以创建：
+
+`src/types/vue.d.ts`：
+
+```
+import 'vue'
+
+import type { formatPrice } from '../utils/formatPrice'
+
+declare module 'vue' {
+  interface ComponentCustomProperties {
+    $formatPrice: typeof formatPrice
+  }
+}
+
+export {}
+```
+
+这个文件需要被项目的 TypeScript 配置包含。常规 create-vue 项目通常已经包含 `src` 下的声明文件。
+
+注意两个职责：
+
+|操作|解决的问题|
+|---|---|
+|`app.config.globalProperties...`|运行时真的注册这个属性|
+|扩展 `ComponentCustomProperties`|告诉 TypeScript 这个属性的类型|
+
+只有类型声明，没有运行时注册，实际使用仍然会出问题。
+
+声明文件中的顶层 `import` 或 `export` 也很重要，它让这里执行的是模块扩展，而不是错误地覆盖模块声明。[Vue.js](https://cn.vuejs.org/guide/typescript/options-api?utm_source=chatgpt.com)
+
+### 6. `<script setup>` 中怎么访问？
+
+不能直接认为：
+
+```
+app.config.globalProperties.$formatPrice = formatPrice
+```
+
+就会在所有 `<script setup>` 中自动声明一个同名变量。
+
+下面这样写不成立：
+
+```
+<script setup lang="ts">
+// 没有声明或导入这个变量
+// const result = $formatPrice(1990)
+</script>
+```
+
+`<script setup>` 中没有组件实例的 `this`。
+
+对于这种普通工具函数，直接导入通常最清楚：
+
+```
+<script setup lang="ts">
+import { formatPrice } from './utils/formatPrice'
+
+const priceText = formatPrice(1990)
+</script>
+
+<template>
+  <p>{{ priceText }}</p>
+
+  <p>{{ formatPrice(2990) }}</p>
+</template>
+```
+
+所以，认识 `globalProperties` 不代表应该把所有工具函数都挂到这里。
+
+## 六、app.config.errorHandler：应用级错误处理
+
+```
+app.config.errorHandler = (error, instance, info) => {
+  console.error('应用捕获到错误：', error)
+  console.error('错误来源信息：', info)
+}
+```
+
+它用于处理传播到应用层的 Vue 错误，例如组件渲染、事件处理等过程中出现的错误。
+
+与上一章对比：
+
+|方式|更适合的职责|
+|---|---|
+|`onErrorCaptured`|在某个组件边界处理后代错误|
+|`app.config.errorHandler`|处理继续传播到应用层的错误|
+
+如果后代错误已被某个 `onErrorCaptured` 处理并返回 `false`，它会停止继续传播。
+
+它也不是浏览器中所有独立脚本错误和 Promise 拒绝的万能捕获器。
+
+## 七、Vue 2 与 Vue 3 的常见迁移对照
+
+|Vue 2|Vue 3|
+|---|---|
+|`new Vue(...)`|`createApp(...)`|
+|`Vue.component(...)`|`app.component(...)`|
+|`Vue.directive(...)`|`app.directive(...)`|
+|`Vue.use(...)`|`app.use(...)`|
+|`Vue.mixin(...)`|`app.mixin(...)`|
+|`Vue.config`|`app.config`|
+|`Vue.prototype.$xxx`|`app.config.globalProperties.$xxx`|
+|`Vue.config.productionTip`|已移除|
+|`Vue.extend(...)`|已移除，组件定义使用普通选项对象或 `defineComponent` 等方式|
+
+这里特别注意：
+
+```
+defineComponent(...)
+```
+
+有助于定义组件和进行类型推导，但它不等同于 Vue 2 中生成子类构造器的 `Vue.extend`。
+
+Vue 3 把影响应用环境的注册和配置迁移到应用实例，有助于不同应用之间保持独立。[Vue 3 Migration Guide](https://v3-migration.vuejs.org/breaking-changes/global-api.html?utm_source=chatgpt.com)
+
+## 八、不是所有 API 都变成 app.xxx
+
+例如 `nextTick`：
+
+Vue 3 中：
+
+```
+import { nextTick } from 'vue'
+
+await nextTick()
+```
+
+不是：
+
+```
+// 没有这种对应迁移
+// app.nextTick()
+```
+
+同样，响应式和生命周期工具通过模块导入：
+
+```
+import {
+  ref,
+  reactive,
+  computed,
+  watch,
+  onMounted
+} from 'vue'
+```
+
+还要注意 Vue 2 的：
+
+```
+Vue.set(object, 'name', '小轩')
+
+Vue.delete(object, 'name')
+```
+
+在 Vue 3 的响应式代理对象上，可以直接进行属性添加和删除：
+
+```
+import { reactive } from 'vue'
+
+const user = reactive<{
+  name?: string
+}>({})
+
+user.name = '小轩'
+
+delete user.name
+```
+
+不需要寻找：
+
+```
+// app.set(...)
+// app.delete(...)
+```
+
+## 九、实际项目中如何选择组织方式？
+
+|内容|常见组织方式|
+|---|---|
+|金额、日期等纯格式化函数|工具模块，直接导入|
+|组件自己的交互状态|组件内 `ref`、`reactive`|
+|可复用的有状态逻辑|自定义 Hook|
+|一棵组件子树共享的服务或上下文|`provide / inject`|
+|多页面共享的业务状态|Pinia|
+|路由能力|Router 插件|
+|应用统一注册和配置|`main.ts` 中操作应用实例|
+
+这一章最需要记住的是：
+
+**`createApp` 创建应用，`app` 负责应用级配置，组件负责具体界面与业务交互。**
